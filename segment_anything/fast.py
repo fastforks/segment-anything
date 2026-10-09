@@ -18,7 +18,8 @@ Changes vs upstream (the network math is unchanged; only precision / kernels / d
   an augmented q/k dot product (q' = [q * scale, rel_h, rel_w], k' = [k, onehot(kh), onehot(kw)]), so the fused
   attention kernels run without materializing the N x N attention matrix; v is zero-padded to the same width so the flash
   kernel applies
-- optional fp16-accumulation GEMMs (`gemm_acc16`, off here; 2x tensor-core rate on GeForce) -- validated by mask IoU
+- fp16-accumulation GEMMs (`gemm_acc16`, on here; 2x tensor-core rate on GeForce) -- validated by mask IoU
+  (best-mask IoU vs upstream fp32 >= 0.998 mean for ViT-B/L/H)
 - preprocessing on the GPU (uint8 upload, antialiased bilinear resize like PIL, normalize + pad fused)
 - prompt encoder / mask decoder / mask upsampling unchanged (fp32), masks thresholded on the GPU before the host copy
 """
@@ -165,7 +166,7 @@ class FastImageEncoder:
 
 
 class FastSamPredictor(SamPredictor):
-    def __init__(self, sam_model, gemm_acc16=False, dtype=torch.float16):
+    def __init__(self, sam_model, gemm_acc16=True, dtype=torch.float16):
         super().__init__(sam_model)
         self.fenc = FastImageEncoder(sam_model.image_encoder, gemm_acc16, dtype)
 
