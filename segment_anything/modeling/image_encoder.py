@@ -4,6 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -223,21 +225,44 @@ class Attention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, H, W, _ = x.shape
-        # qkv with shape (3, B, nHead, H * W, C)
-        qkv = self.qkv(x).reshape(B, H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-        # q, k, v with shape (B * nHead, H * W, C)
-        q, k, v = qkv.reshape(3, B * self.num_heads, H * W, -1).unbind(0)
-
-        attn = (q * self.scale) @ k.transpose(-2, -1)
+        N = H * W
+        # q, k, v with shape (B, nHead, H * W, C)
+        q, k, v = self.qkv(x).reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4).unbind(0)
 
         if self.use_rel_pos:
-            attn = add_decomposed_rel_pos(attn, q, self.rel_pos_h, self.rel_pos_w, (H, W), (H, W))
-
-        attn = attn.softmax(dim=-1)
-        x = (attn @ v).view(B, self.num_heads, H, W, -1).permute(0, 2, 3, 1, 4).reshape(B, H, W, -1)
-        x = self.proj(x)
-
-        return x
+            half = q.dtype in (torch.float16, torch.bfloat16)
+            d = q.shape[-1]
+            pad = -(d + H + W) % 8
+            # SDPA divides by sqrt(head dim of q); the augmented q is wider, so pre-multiply q and the rel-pos tables
+            # by sqrt(width) to keep the net factor self.scale.
+            s = math.sqrt(d + H + W + pad) if half else 1.0
+            Rh = get_rel_pos(H, H, self.rel_pos_h).to(q.dtype) * s
+            Rw = get_rel_pos(W, W, self.rel_pos_w).to(q.dtype) * s
+            r_q = q.reshape(B, self.num_heads, H, W, -1)
+            rel_h = torch.einsum("bnhwc,hkc->bnhwk", r_q, Rh)
+            rel_w = torch.einsum("bnhwc,wkc->bnhwk", r_q, Rw)
+            if half:
+                # The decomposed relative position bias rel_h[q, kh] + rel_w[q, kw] is a dot product of the query's
+                # relative embeddings with one-hot key coordinates, so it is folded into an augmented q/k product
+                # (q' = [q * scale, rel_h, rel_w], k' = [k, onehot(kh), onehot(kw)]). The flash kernel then runs
+                # without materializing the (H*W) x (H*W) attention matrix. v is zero-padded to the same width so
+                # that the kernel applies; the padded columns are dropped from the output.
+                k_h = torch.eye(H, device=q.device, dtype=q.dtype)[:, None, :].expand(H, W, H)
+                k_w = torch.eye(W, device=q.device, dtype=q.dtype)[None, :, :].expand(H, W, W)
+                k_aug = torch.cat([k_h, k_w], dim=-1).reshape(1, 1, N, H + W).expand(B, self.num_heads, N, H + W)
+                q = torch.cat([q * (self.scale * s), rel_h.reshape(B, self.num_heads, N, H), rel_w.reshape(B, self.num_heads, N, W)], -1)
+                k = torch.cat([k, k_aug], dim=-1)
+                q, k, v = (F.pad(t, (0, pad)) for t in (q, k, F.pad(v, (0, H + W))))
+                x = F.scaled_dot_product_attention(q, k, v)[..., :d]
+            else:
+                # fp32 has no flash kernel, and the wider augmented q/k only adds work to the fp32 kernels: pass the
+                # bias as an additive mask instead (same math as the original code, fused softmax and matmuls).
+                bias = (rel_h[..., :, None] + rel_w[..., None, :]).reshape(B, self.num_heads, N, N)
+                x = F.scaled_dot_product_attention(q, k, v, attn_mask=bias)
+        else:
+            x = F.scaled_dot_product_attention(q, k, v)
+        x = x.view(B, self.num_heads, H, W, -1).permute(0, 2, 3, 1, 4).reshape(B, H, W, -1)
+        return self.proj(x)
 
 
 def window_partition(x: torch.Tensor, window_size: int) -> Tuple[torch.Tensor, Tuple[int, int]]:
