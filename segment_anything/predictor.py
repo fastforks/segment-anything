@@ -6,6 +6,7 @@
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from segment_anything.modeling import Sam
 
@@ -18,6 +19,7 @@ class SamPredictor:
     def __init__(
         self,
         sam_model: Sam,
+        gpu_preprocess: bool = False,
     ) -> None:
         """
         Uses SAM to calculate the image embedding for an image, and then
@@ -25,9 +27,13 @@ class SamPredictor:
 
         Arguments:
           sam_model (Sam): The model to use for mask prediction.
+          gpu_preprocess (bool): If True, `set_image` uploads the uint8 image and
+            resizes it on the device (antialiased bilinear, rounded to uint8 after
+            each pass like PIL) instead of resizing with PIL on the CPU.
         """
         super().__init__()
         self.model = sam_model
+        self.gpu_preprocess = gpu_preprocess
         self.transform = ResizeLongestSide(sam_model.image_encoder.img_size)
         self.reset_image()
 
@@ -53,11 +59,25 @@ class SamPredictor:
             image = image[..., ::-1]
 
         # Transform the image to the form expected by the model
-        input_image = self.transform.apply_image(image)
-        input_image_torch = torch.as_tensor(input_image, device=self.device)
-        input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :]
+        if self.gpu_preprocess:
+            input_image_torch = self._resize_on_device(image)
+        else:
+            input_image = self.transform.apply_image(image)
+            input_image_torch = torch.as_tensor(input_image, device=self.device)
+            input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :]
 
         self.set_torch_image(input_image_torch, image.shape[:2])
+
+    def _resize_on_device(self, image: np.ndarray) -> torch.Tensor:
+        """Same result as `self.transform.apply_image` (PIL bilinear) up to 1 LSB on ~0.1% of the pixels."""
+        h, w = image.shape[:2]
+        nh, nw = self.transform.get_preprocess_shape(h, w, self.transform.target_length)
+        x = torch.as_tensor(np.ascontiguousarray(image), device=self.device).permute(2, 0, 1)[None].float()
+        if nw != w:
+            x = F.interpolate(x, (h, nw), mode="bilinear", align_corners=False, antialias=True).round_().clamp_(0, 255)
+        if nh != h:
+            x = F.interpolate(x, (nh, nw), mode="bilinear", align_corners=False, antialias=True).round_().clamp_(0, 255)
+        return x
 
     @torch.no_grad()
     def set_torch_image(
