@@ -1,3 +1,51 @@
+# Segment Anything (SAM): faster inference fork
+
+> **You are on `fast`.** Research fork of [facebookresearch/segment-anything](https://github.com/facebookresearch/segment-anything) (base `dca509f`; `main` mirrors upstream). Branches: `fast` = plain-PyTorch changes only (ONNX / TensorRT exportable), `kernels` = `fast` plus fp16-accumulation GEMMs (not exportable), `pr/*` = the small changes that could go upstream, each alone on upstream `main`; `realistic-prs` = all of them together.
+> Licence as upstream: [Apache 2.0](LICENSE) (code); checkpoints under their upstream licence (not included, link only). On `fast` and `kernels` no upstream file is modified except this README; the only new file is `segment_anything/fast.py`, which carries a notice that it was added in this fork (Apache-2.0 section 4b). The `pr/*` branches are upstream-PR candidates and keep upstream's file headers.
+
+```python
+from segment_anything import sam_model_registry
+from segment_anything.fast import FastSamPredictor   # same API as SamPredictor
+pred = FastSamPredictor(sam_model_registry["vit_b"](checkpoint="sam_vit_b_01ec64.pth").cuda())  # on `kernels`: fp16-accumulation GEMMs on by default
+pred.set_image(image)                                  # uint8 HxWx3
+masks, scores, logits = pred.predict(point_coords=pts, point_labels=lbl, multimask_output=True)
+```
+
+**How much of the speed-up could be merged upstream?** One harness for all rows: `set_image` + one-point `predict` (3 masks to the host), 1297x840 image, RTX 5060 Ti 16 GB, torch 2.14.1+cu130, 2026-10-12, cold process, median of 20 runs after 3 warm-up calls. Memory = torch peak allocated / reserved over load + runs (includes weights). Accuracy = mean mask IoU vs upstream fp32 over 336 masks (21 Mip-NeRF 360 images x 6 prompts).
+
+ViT-B:
+
+| level | ms | speed-up | peak MB alloc / reserved | mean mask IoU vs upstream fp32 |
+|---|---|---|---|---|
+| upstream default (fp32) | 172.2 | 1.00x | 2794 / 3148 | reference |
+| + flags only (fp16 autocast around `set_image`, `cudnn.benchmark`, TF32) | 101.3 | 1.70x | 1781 / 2632 | 0.9906 |
+| + realistic upstream PRs (the 3 small PRs below, as one subset, with the same flags) | 53.7 | 3.21x | 407 / 488 | 0.9894 |
+| fork `fast` (all plain-PyTorch changes, exportable) | 47.3 | 3.64x | 361 / 492 | 0.9894 |
+| fork `kernels` (+ fp16-accumulation GEMMs) | 41.5 | 4.15x | 361 / 492 | 0.9902 |
+
+**Realistically mergeable upstream: 3.21x of 4.15x** (ViT-B). ViT-L: 3.25x of 4.37x; ViT-H: 3.20x of 4.31x.
+
+| ms (speed-up) / MB alloc | ViT-L | ViT-H |
+|---|---|---|
+| upstream fp32 | 410.8 / 4425 | 735.9 / 5762 |
+| + flags only | 199.3 (2.06x) / 3413 | 308.0 (2.39x) / 5366 |
+| + realistic PRs | 126.4 (3.25x) / 1197 | 230.1 (3.20x) / 2518 |
+| `fast` | 114.7 (3.58x) / 1197 | 214.0 (3.44x) / 2518 |
+| `kernels` | 93.9 (4.37x) / 1197 | 170.7 (4.31x) / 2518 |
+| mean mask IoU vs fp32 (flags / PRs / fast / kernels) | 0.9949 / 0.9955 / 0.9956 / 0.9936 | 0.9979 / 0.9974 / 0.9974 / 0.9964 |
+
+Startup (model load) 0.9 s for ViT-B (fork = upstream). First-call overhead: upstream +0.5 s; fork rows +1.0 s (cudnn autotune of the convs, `cudnn.benchmark`; the flags row pays it too). New image size: +0 ms (eager PyTorch, nothing compiled per size; upstream +0 ms). SAM masks of ambiguous single points move with tiny numeric changes (a 1-LSB resize difference alone gives 0.976 mean IoU), so the 0.989 to 0.990 mean IoU of every non-reference row is at the noise level of the model; the precision-only flags row is already at 0.9906.
+
+Realistic PRs (each alone on upstream `main`, ViT-B, ms saved on the preceding row; drafts only, nothing posted):
+- `pr/sdpa-relpos-attention`: relative-position bias folded into a fused SDPA call, no N x N attention matrix. 101.3 to 63.2 ms (-38.1 ms, with fp16 autocast), peak 1781 to 736 MB alloc. Draft `01_PR_sdpa_relpos_attention.md`.
+- `pr/half-encoder`: `SamPredictor(..., encoder_dtype=torch.float16)` + `LayerNorm2d` via `F.layer_norm`. 172.2 to 83.5 ms alone (vs 101.3 ms for autocast: -17.8 ms), peak 1444 MB. Draft `02_PR_half_encoder.md`.
+- `pr/gpu-preprocess`: opt-in `gpu_preprocess=True`, PIL-style two-pass resize on the GPU. 101.3 to 93.9 ms (-7.4 ms). Draft `03_PR_gpu_preprocess.md`.
+
+Fork-only: `fast.py` replaces the whole encoder forward (window partition, cached one-hot tables, fused neck) and `kernels` flips the global fp16-accumulation flag: a different code path next to the existing one, and a numerics trade-off, so neither is a small PR.
+Raw results, commands and per-run times: `results/2026-10-12_sam-b_release/` in the research repo (bench harness `rel_bench.py`, `queue.sh`).
+
+---
+
 ## Latest updates -- SAM 2: Segment Anything in Images and Videos
 
 Please check out our new release on [**Segment Anything Model 2 (SAM 2)**](https://github.com/facebookresearch/segment-anything-2).
