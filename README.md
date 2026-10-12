@@ -1,6 +1,6 @@
 # Segment Anything (SAM): faster inference fork
 
-> **You are on `fast`.** Research fork of [facebookresearch/segment-anything](https://github.com/facebookresearch/segment-anything) (base `dca509f`; `main` mirrors upstream). Branches: `fast` = plain-PyTorch changes only (ONNX / TensorRT exportable), `kernels` = `fast` plus fp16-accumulation GEMMs (not exportable), `pr/*` = the small changes that could go upstream, each alone on upstream `main`; `realistic-prs` = all of them together.
+> **You are on `kernels`.** Research fork of [facebookresearch/segment-anything](https://github.com/facebookresearch/segment-anything) (base `dca509f`; `main` mirrors upstream). Branches: `fast` = plain-PyTorch changes only (ONNX / TensorRT exportable), `kernels` = `fast` plus fp16-accumulation GEMMs (not exportable), `pr/*` = the small changes that could go upstream, each alone on upstream `main`; `realistic-prs` = all of them together.
 > Licence as upstream: [Apache 2.0](LICENSE) (code); checkpoints under their upstream licence (not included, link only). On `fast` and `kernels` no upstream file is modified except this README; the only new file is `segment_anything/fast.py`, which carries a notice that it was added in this fork (Apache-2.0 section 4b). The `pr/*` branches are upstream-PR candidates and keep upstream's file headers.
 
 ```python
