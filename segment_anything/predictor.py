@@ -20,6 +20,7 @@ class SamPredictor:
         self,
         sam_model: Sam,
         gpu_preprocess: bool = False,
+        encoder_dtype: Optional[torch.dtype] = None,
     ) -> None:
         """
         Uses SAM to calculate the image embedding for an image, and then
@@ -30,10 +31,19 @@ class SamPredictor:
           gpu_preprocess (bool): If True, `set_image` uploads the uint8 image and
             resizes it on the device (antialiased bilinear, rounded to uint8 after
             each pass like PIL) instead of resizing with PIL on the CPU.
+          encoder_dtype (torch.dtype or None): If set (e.g. torch.float16), the
+            image encoder is converted to this dtype once; its output embedding is
+            returned to float32 for the prompt encoder and mask decoder. The
+            conversion is done in place on `sam_model.image_encoder`, so the model
+            (and any other predictor or mask generator sharing it) stays in this
+            dtype; pass a separate model instance if the fp32 encoder is still needed.
         """
         super().__init__()
         self.model = sam_model
         self.gpu_preprocess = gpu_preprocess
+        self.encoder_dtype = encoder_dtype
+        if encoder_dtype is not None:
+            sam_model.image_encoder.to(encoder_dtype)
         self.transform = ResizeLongestSide(sam_model.image_encoder.img_size)
         self.reset_image()
 
@@ -106,7 +116,10 @@ class SamPredictor:
         self.original_size = original_image_size
         self.input_size = tuple(transformed_image.shape[-2:])
         input_image = self.model.preprocess(transformed_image)
-        self.features = self.model.image_encoder(input_image)
+        if self.encoder_dtype is not None:
+            self.features = self.model.image_encoder(input_image.to(self.encoder_dtype)).float()
+        else:
+            self.features = self.model.image_encoder(input_image)
         self.is_image_set = True
 
     def predict(
