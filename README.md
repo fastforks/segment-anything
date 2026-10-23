@@ -15,23 +15,23 @@ masks, scores, logits = pred.predict(point_coords=pts, point_labels=lbl, multima
 
 ViT-B:
 
-| level | ms | speed-up | peak MB alloc / reserved | mean mask IoU vs upstream fp32 |
+| level | ms | speed-up (vs flags / vs upstream) | peak MB alloc / reserved | mean mask IoU vs upstream fp32 |
 |---|---|---|---|---|
-| upstream default (fp32) | 172.2 | 1.00x | 2794 / 3148 | reference |
-| upstream + recommended fast flags (fp16 autocast around `set_image`, `cudnn.benchmark`, TF32) | 101.3 | 1.70x | 1781 / 2632 | 0.9906 |
-| + realistic upstream PRs (the 3 small PRs below, as one subset, with the same flags) | 53.7 | 3.21x | 407 / 488 | 0.9894 |
-| `portable` (all plain-PyTorch changes, exportable) | 47.3 | 3.64x | 361 / 492 | 0.9894 |
-| `fp16-accumulate` (PyTorch fp16 GEMM accumulation) | 41.5 | 4.15x | 361 / 492 | 0.9902 |
+| upstream (fp32) | 172.2 | 0.59x / 1.00x | 2794 / 3148 | reference |
+| upstream + flags (fp16 autocast around `set_image`, `cudnn.benchmark`, TF32) | 101.3 | 1.00x / 1.70x | 1781 / 2632 | 0.9906 |
+| + realistic upstream PRs (the 3 small PRs below, as one subset, with the same flags) | 53.7 | 1.89x / 3.21x | 407 / 488 | 0.9894 |
+| `portable` (all plain-PyTorch changes, exportable) | 47.3 | 2.14x / 3.64x | 361 / 492 | 0.9894 |
+| `fp16-accumulate` (PyTorch fp16 GEMM accumulation) | 41.5 | 2.44x / 4.15x | 361 / 492 | 0.9902 |
 
 **Realistically mergeable upstream: 3.21x of 4.15x** (ViT-B). ViT-L: 3.25x of 4.37x; ViT-H: 3.20x of 4.31x.
 
-| ms (speed-up) / MB alloc | ViT-L | ViT-H |
+| ms (vs flags / vs upstream) / MB alloc | ViT-L | ViT-H |
 |---|---|---|
-| upstream fp32 | 410.8 / 4425 | 735.9 / 5762 |
-| upstream + recommended fast flags | 199.3 (2.06x) / 3413 | 308.0 (2.39x) / 5366 |
-| + realistic PRs | 126.4 (3.25x) / 1197 | 230.1 (3.20x) / 2518 |
-| `portable` | 114.7 (3.58x) / 1197 | 214.0 (3.44x) / 2518 |
-| `fp16-accumulate` | 93.9 (4.37x) / 1197 | 170.7 (4.31x) / 2518 |
+| upstream (fp32) | 410.8 (0.49x / 1.00x) / 4425 | 735.9 (0.42x / 1.00x) / 5762 |
+| upstream + flags | 199.3 (1.00x / 2.06x) / 3413 | 308.0 (1.00x / 2.39x) / 5366 |
+| + realistic PRs | 126.4 (1.58x / 3.25x) / 1197 | 230.1 (1.34x / 3.20x) / 2518 |
+| `portable` | 114.7 (1.74x / 3.58x) / 1197 | 214.0 (1.44x / 3.44x) / 2518 |
+| `fp16-accumulate` | 93.9 (2.12x / 4.37x) / 1197 | 170.7 (1.80x / 4.31x) / 2518 |
 | mean mask IoU vs fp32 (flags / PRs / fast / kernels) | 0.9949 / 0.9955 / 0.9956 / 0.9936 | 0.9979 / 0.9974 / 0.9974 / 0.9964 |
 
 Startup (model load) 0.9 s for ViT-B (fork = upstream). First-call overhead: upstream +0.5 s; fork rows +1.0 s (cudnn autotune of the convs, `cudnn.benchmark`; the flags row pays it too). New image size: +0 ms (eager PyTorch, nothing compiled per size; upstream +0 ms). SAM masks of ambiguous single points move with tiny numeric changes (a 1-LSB resize difference alone gives 0.976 mean IoU), so the 0.989 to 0.990 mean IoU of every non-reference row is at the noise level of the model; the precision-only flags row is already at 0.9906.
